@@ -16,7 +16,7 @@ TEMP_FILES=()
 # === 清理函数 ===
 cleanup() {
     local exit_code=$?
-
+    
     # 终止所有后台渲染进程
     for pid in "${RENDER_PIDS[@]}"; do
         if kill -0 "$pid" 2>/dev/null; then
@@ -24,14 +24,14 @@ cleanup() {
             kill "$pid" 2>/dev/null || true
         fi
     done
-
+    
     # 清理临时文件（如果不保留）
     if [[ "${KEEP_TEMP:-false}" == "false" ]]; then
         for temp_file in "${TEMP_FILES[@]}"; do
             [[ -f "$temp_file" ]] && rm -f "$temp_file"
         done
     fi
-
+    
     exit $exit_code
 }
 
@@ -100,14 +100,14 @@ esac
 # 预创建 manim 工作子目录
 prepare_manim_directories() {
     echo "📂 预创建 manim 工作子目录..."
-
+    
     local directories=(
         "$MEDIA_DIR/images/$BASENAME"
         "$MEDIA_DIR/Tex"
         "$MEDIA_DIR/texts"
         "$MEDIA_DIR/videos/$BASENAME"
     )
-
+    
     for dir in "${directories[@]}"; do
         if [[ ! -d "$dir" ]]; then
             echo "  📁 创建目录: $dir"
@@ -116,20 +116,46 @@ prepare_manim_directories() {
             echo "  ✅ 目录已存在: $dir"
         fi
     done
-
+    
     echo "✅ manim 工作目录准备完成"
+}
+
+# 校验 dvisvgm 版本
+check_dvisvgm_version() {
+    echo "🔍 检查 dvisvgm 版本..."
+    
+    if ! command -v dvisvgm &> /dev/null; then
+        echo "❌ dvisvgm 未安装或不在 PATH 中"
+        exit 1
+    fi
+    
+    local version_output=$(dvisvgm --version 2>&1 | head -1)
+    local version=$(echo "$version_output" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+    
+    if [[ -z "$version" ]]; then
+        echo "❌ 无法获取 dvisvgm 版本信息"
+        exit 1
+    fi
+    
+    # 版本比较：要求版本 > 2.4
+    if [[ $(echo "$version 2.4" | awk '{print ($1 > $2)}') -eq 1 ]]; then
+        echo "✅ dvisvgm 版本检查通过: $version (> 2.4)"
+    else
+        echo "❌ dvisvgm 版本过低: $version (需要 > 2.4)"
+        exit 1
+    fi
 }
 
 # 渲染单个场景
 render_scene() {
     local scene="$1"
     local cmd_args=("$PY_FILE" "$scene" "$QUALITY_FLAG" --media_dir "$MEDIA_DIR")
-
+    
     # 添加帧率参数（如果指定且不是--keep-temp）
     if [[ -n "$FRAMERATE" && "$FRAMERATE" != "--keep-temp" ]]; then
         cmd_args+=(--fps "$FRAMERATE")
     fi
-
+    
     # 执行渲染命令
     "$MANIM_PATH" "${cmd_args[@]}"
 }
@@ -137,13 +163,13 @@ render_scene() {
 # 等待所有渲染完成
 wait_all_renders() {
     local failed_count=0
-
+    
     echo "⏳ 等待 ${#RENDER_PIDS[@]} 个渲染任务完成..."
-
+    
     for i in "${!RENDER_PIDS[@]}"; do
         local pid="${RENDER_PIDS[i]}"
         local scene="${SCENES[i]}"
-
+        
         if wait "$pid"; then
             echo "✅ $scene 渲染完成"
         else
@@ -152,23 +178,26 @@ wait_all_renders() {
             ((failed_count++))
         fi
     done
-
+    
     if [[ $failed_count -gt 0 ]]; then
         echo "💥 $failed_count 个场景渲染失败: ${FAILED_SCENES[*]}"
         exit 1
     fi
-
+    
     echo "🎉 所有场景渲染成功!"
 }
 
 # 合并视频
 merge_videos() {
+    echo "⏱️  开始计时 - 视频合并阶段"
+    local merge_start_time=$(date +%s)
+    
     local list_file="$MEDIA_DIR/videos/$BASENAME/list.txt"
     TEMP_FILES+=("$list_file")
-
+    
     echo "📝 生成合并列表..."
     mkdir -p "$(dirname "$list_file")"
-
+    
     # 生成文件列表
     for scene in "${SCENES[@]}"; do
         local video_path="$MEDIA_DIR/videos/$BASENAME/$RESOLUTION_DIR/${scene}.mp4"
@@ -178,50 +207,63 @@ merge_videos() {
         fi
         echo "file '$video_path'" >> "$list_file"
     done
-
+    
     echo "🔗 合并视频..."
     local ffmpeg_args=(-y -f concat -safe 0 -i "$list_file")
-
+    
     # 尝试无损合并
     if ffmpeg "${ffmpeg_args[@]}" -c copy "$OUTPUT_VIDEO" 2>/dev/null; then
         echo "✅ 合并成功 (无损模式)"
     else
         echo "⚠️ 无损合并失败，使用转码模式..."
         ffmpeg_args+=(-c:v libx264 -crf 18 -preset fast -pix_fmt yuv420p)
-
+        
         # 添加帧率参数（如果指定）
         if [[ -n "$FRAMERATE" && "$FRAMERATE" != "--keep-temp" ]]; then
             ffmpeg_args+=(-r "$FRAMERATE")
         fi
-
+        
         ffmpeg "${ffmpeg_args[@]}" "$OUTPUT_VIDEO"
         echo "✅ 合并成功 (转码模式)"
     fi
-
+    
+    local merge_end_time=$(date +%s)
+    local merge_duration=$((merge_end_time - merge_start_time))
+    echo "✅ 视频合并完成，用时: ${merge_duration}秒"
     echo "📁 输出文件: $OUTPUT_VIDEO"
 }
 
 # === 主执行流程 ===
 main() {
     echo "🚀 开始并发渲染 ${#SCENES[@]} 个场景 (清晰度: $CLARITY)"
-
+    
     # 预创建工作目录以避免并发冲突
     prepare_manim_directories
-
+    
+    # 校验 dvisvgm 版本
+    check_dvisvgm_version
+    
     # 启动所有渲染任务
+    echo "⏱️  开始计时 - 并发渲染阶段"
+    local render_start_time=$(date +%s)
+    
     for scene in "${SCENES[@]}"; do
         echo "🎬 启动渲染: $scene"
         render_scene "$scene" &
         RENDER_PIDS+=($!)
     done
-
+    
     # 等待所有任务完成
     wait_all_renders
-
+    
+    local render_end_time=$(date +%s)
+    local render_duration=$((render_end_time - render_start_time))
+    echo "✅ 并发渲染完成，用时: ${render_duration}秒"
+    
     # 合并视频
     merge_videos
-
-    echo "🎊 渲染完成! 用时: ${SECONDS}s"
+    
+    echo "🎊 渲染完成! 总用时: ${SECONDS}秒"
 }
 
 # 执行主函数
