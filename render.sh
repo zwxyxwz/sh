@@ -99,25 +99,30 @@ esac
 
 # 预创建 manim 工作子目录
 prepare_manim_directories() {
-    echo "📂 预创建 manim 工作子目录..."
+    echo "📂 预创建 manim 场景独立工作目录..."
     
-    local directories=(
-        "$MEDIA_DIR/images/$BASENAME"
-        "$MEDIA_DIR/Tex"
-        "$MEDIA_DIR/texts"
-        "$MEDIA_DIR/videos/$BASENAME"
-    )
-    
-    for dir in "${directories[@]}"; do
-        if [[ ! -d "$dir" ]]; then
-            echo "  📁 创建目录: $dir"
-            mkdir -p "$dir" || { echo "❌ 创建目录失败: $dir"; exit 1; }
-        else
-            echo "  ✅ 目录已存在: $dir"
-        fi
+    # 为每个场景创建独立的工作目录
+    for scene in "${SCENES[@]}"; do
+        echo "  🎬 为场景 $scene 创建工作目录..."
+        
+        local scene_directories=(
+            "$MEDIA_DIR/$scene/images/$BASENAME"
+            "$MEDIA_DIR/$scene/Tex"
+            "$MEDIA_DIR/$scene/texts"
+            "$MEDIA_DIR/$scene/videos/$BASENAME/$RESOLUTION_DIR"
+        )
+        
+        for dir in "${scene_directories[@]}"; do
+            if [[ ! -d "$dir" ]]; then
+                echo "    📁 创建目录: $dir"
+                mkdir -p "$dir" || { echo "❌ 创建目录失败: $dir"; exit 1; }
+            else
+                echo "    ✅ 目录已存在: $dir"
+            fi
+        done
     done
     
-    echo "✅ manim 工作目录准备完成"
+    echo "✅ 所有场景工作目录准备完成"
 }
 
 # 校验 dvisvgm 版本
@@ -149,7 +154,8 @@ check_dvisvgm_version() {
 # 渲染单个场景
 render_scene() {
     local scene="$1"
-    local cmd_args=("$PY_FILE" "$scene" "$QUALITY_FLAG" --media_dir "$MEDIA_DIR")
+    local scene_media_dir="$MEDIA_DIR/$scene"
+    local cmd_args=("$PY_FILE" "$scene" "$QUALITY_FLAG" --media_dir "$scene_media_dir")
     
     # 添加帧率参数（如果指定且不是--keep-temp）
     if [[ -n "$FRAMERATE" && "$FRAMERATE" != "--keep-temp" ]]; then
@@ -192,7 +198,7 @@ merge_videos() {
     echo "⏱️  开始计时 - 视频合并阶段"
     local merge_start_time=$(date +%s)
     
-    local list_file="$MEDIA_DIR/videos/$BASENAME/list.txt"
+    local list_file="$MEDIA_DIR/list.txt"
     TEMP_FILES+=("$list_file")
     
     echo "📝 生成合并列表..."
@@ -200,7 +206,7 @@ merge_videos() {
     
     # 生成文件列表
     for scene in "${SCENES[@]}"; do
-        local video_path="$MEDIA_DIR/videos/$BASENAME/$RESOLUTION_DIR/${scene}.mp4"
+        local video_path="$MEDIA_DIR/$scene/videos/$BASENAME/$RESOLUTION_DIR/${scene}.mp4"
         if [[ ! -f "$video_path" ]]; then
             echo "❌ 场景视频文件不存在: $video_path"
             exit 1
